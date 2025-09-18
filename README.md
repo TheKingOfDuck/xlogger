@@ -16,36 +16,27 @@ ssh root@ssh.server.svc.local
 ```
 
 
-
 ## 编译
 
 ```bash
 make
 ```
 
-## 使用
-
-```bash
-# 比如你想监控 ssh，就这样用
-./xlogger user@example.com -p 2222
-```
-
-所有你平时传给 ssh 的参数，现在传给 xlogger 就行，它会原封不动转给 ssh。
-
-## 配置选项
+## 选项
 
 在 `xlogger.c` 文件中可以修改以下配置：
 
 ### 目标程序配置
 ```c
 #define TARGET_PROGRAM "/path/to/your/program"
+#define LOG_FILE "/tmp/xlogger.log"
 ```
 
 例如：
 - SSH: `#define TARGET_PROGRAM "/usr/bin/ssh"`
 - Sudo: `#define TARGET_PROGRAM "/usr/bin/sudo"`
 
-### 日志开关配置
+### 记录控制
 ```c
 static int log_keyboard_input = 1;   // 1=记录键盘输入, 0=不记录
 static int log_console_output = 1;   // 1=记录控制台输出, 0=不记录
@@ -63,17 +54,5 @@ static int log_console_output = 1;   // 1=记录控制台输出, 0=不记录
 ```
 [2023-12-07 10:30:15] INPUT: username\n
 [2023-12-07 10:30:16] OUTPUT: Password: 
-[2023-12-07 10:30:20] INPUT: ********\n
-```
-
-## 清理
-
-```bash
-make clean
-```
-
-## 安装到系统
-
-```bash
-sudo make install
+[2023-12-07 10:30:20] INPUT: 123456\n
 ```
