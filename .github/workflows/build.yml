@@ -1,0 +1,138 @@
+name: Build xlogger
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            cc: gcc
+            output: xlogger-linux-amd64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            cc: aarch64-linux-gnu-gcc
+            output: xlogger-linux-arm64
+          # macOS builds  
+          - os: darwin
+            arch: amd64
+            runner: macos-13
+            cc: clang
+            output: xlogger-darwin-amd64
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            cc: clang
+            output: xlogger-darwin-arm64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install cross-compilation tools (Linux ARM64)
+      if: matrix.os == 'linux' && matrix.arch == 'arm64'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Build for ${{ matrix.os }}-${{ matrix.arch }}
+      run: |
+        if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+          # Cross-compile for Linux ARM64
+          ${{ matrix.cc }} -Wall -Wextra -std=c99 -O2 -static -o ${{ matrix.output }} xlogger.c
+        elif [ "${{ matrix.os }}" = "darwin" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+          # Native compile on macOS ARM64 runner
+          ${{ matrix.cc }} -Wall -Wextra -std=c99 -O2 -o ${{ matrix.output }} xlogger.c -lutil
+        elif [ "${{ matrix.os }}" = "darwin" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
+          # Cross-compile for macOS Intel on ARM64 runner
+          ${{ matrix.cc }} -Wall -Wextra -std=c99 -O2 -target x86_64-apple-macos10.12 -o ${{ matrix.output }} xlogger.c -lutil
+        else
+          # Native compile for Linux AMD64
+          ${{ matrix.cc }} -Wall -Wextra -std=c99 -O2 -static -o ${{ matrix.output }} xlogger.c
+        fi
+
+    - name: Verify build
+      run: |
+        file ${{ matrix.output }}
+        ls -la ${{ matrix.output }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output }}
+        path: ${{ matrix.output }}
+        retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        find artifacts -name "xlogger-*" -type f -exec cp {} release/ \;
+        cd release
+        chmod +x xlogger-*
+        for file in xlogger-*; do
+          if [[ "$file" == *"linux"* ]]; then
+            tar -czf "${file}.tar.gz" "$file"
+          else
+            tar -czf "${file}.tar.gz" "$file"
+          fi
+        done
+        ls -la
+
+    - name: Generate tag name
+      id: tag
+      run: |
+        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        COMMIT_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+        echo "tag_name=build-${TIMESTAMP}-${COMMIT_SHORT}" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag.outputs.tag_name }}
+        name: "Automated Build ${{ steps.tag.outputs.tag_name }}"
+        body: |
+          **Automated build from commit:** ${{ github.sha }}
+          
+          **Supported platforms:**
+          - Linux AMD64 (x86_64)
+          - Linux ARM64 (aarch64)  
+          - macOS Intel (x86_64)
+          - macOS Apple Silicon (arm64)
+          
+          **Usage:**
+          1. Download the appropriate binary for your platform
+          2. Extract: `tar -xzf xlogger-[platform].tar.gz`
+          3. Make executable: `chmod +x xlogger-[platform]`
+          4. Modify TARGET_PROGRAM in source and recompile, or use as-is
+        files: release/*.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

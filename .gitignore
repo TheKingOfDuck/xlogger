@@ -1,0 +1,40 @@
+# Compiled binaries
+xlogger
+xlogger-*
+
+# Log files
+*.log
+xlogger.log
+
+# Object files
+*.o
+*.obj
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.xcworkspace
+*.xcodeproj
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts
+artifacts/
+release/
+
+# Backup files
+*.bak
+*.backup
