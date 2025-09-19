@@ -13,6 +13,7 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 
 #ifdef __APPLE__
@@ -207,13 +208,15 @@ int setup_terminal(void) {
         return 0;
     }
     
-    if (tcgetattr(STDIN_FILENO, &original_termios) < 0) {
-        perror("tcgetattr");
-        return -1;
-    }
-    
     new_termios = original_termios;
-    cfmakeraw(&new_termios);
+    
+    // 不使用cfmakeraw()，而是手动设置需要的标志
+    // 禁用规范模式和回显，但保留其他终端处理
+    new_termios.c_lflag &= ~(ICANON | ECHO);
+    
+    // 设置非阻塞读取，最小字符数为1
+    new_termios.c_cc[VMIN] = 1;
+    new_termios.c_cc[VTIME] = 0;
     
     if (tcsetattr(STDIN_FILENO, TCSANOW, &new_termios) < 0) {
         perror("tcsetattr");
@@ -225,8 +228,23 @@ int setup_terminal(void) {
 
 int create_pty_and_fork(char **argv) {
     int slave_fd;
+    struct termios *slave_termios = NULL;
+    struct winsize *slave_winsize = NULL;
     
-    if (openpty(&master_fd, &slave_fd, NULL, NULL, NULL) < 0) {
+    // 获取当前终端属性和窗口大小
+    struct termios current_termios;
+    struct winsize current_winsize;
+    
+    if (isatty(STDIN_FILENO)) {
+        if (tcgetattr(STDIN_FILENO, &current_termios) == 0) {
+            slave_termios = &current_termios;
+        }
+        if (ioctl(STDIN_FILENO, TIOCGWINSZ, &current_winsize) == 0) {
+            slave_winsize = &current_winsize;
+        }
+    }
+    
+    if (openpty(&master_fd, &slave_fd, NULL, slave_termios, slave_winsize) < 0) {
         perror("openpty");
         return -1;
     }
@@ -245,6 +263,17 @@ int create_pty_and_fork(char **argv) {
         if (login_tty(slave_fd) < 0) {
             perror("login_tty");
             _exit(1);
+        }
+        
+        // 确保在子进程中设置合适的终端环境
+        if (isatty(STDIN_FILENO)) {
+            // 重置信号处理为默认
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTERM, SIG_DFL);
+            signal(SIGQUIT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+            signal(SIGTTIN, SIG_DFL);
+            signal(SIGTTOU, SIG_DFL);
         }
         
         char **filtered_env = create_filtered_environ();
@@ -333,11 +362,20 @@ int main(int argc, char *argv[]) {
     signal(SIGQUIT, signal_handler);
     atexit(cleanup);
     
-    if (setup_terminal() < 0) {
-        return 1;
+    // 先保存原始终端状态，但先不设置
+    if (isatty(STDIN_FILENO)) {
+        if (tcgetattr(STDIN_FILENO, &original_termios) < 0) {
+            perror("tcgetattr");
+            return 1;
+        }
     }
     
     if (create_pty_and_fork(argv) < 0) {
+        return 1;
+    }
+    
+    // 在fork之后再设置终端
+    if (setup_terminal() < 0) {
         return 1;
     }
     
@@ -346,7 +384,7 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         fprintf(log_fp, " %s", argv[i]);
     }
-    fprintf(log_fp, "\n====================================\n");
+    fprintf(log_fp, "\n------------------------------------\n");
     fflush(log_fp);
     
     io_loop();

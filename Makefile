@@ -23,7 +23,7 @@ endif
 
 .PHONY: all clean install setup deps check-deps help
 
-all: check-deps $(TARGET)
+all: clean check-deps $(TARGET)
 
 # 检查依赖是否已安装
 check-deps:
