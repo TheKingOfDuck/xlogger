@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""
+xlogcat - xlogger 日志解码阅读器
+
+用法:
+  xlogcat <logfile>                   默认: 终端回放，还原原终端屏幕上的输出效果
+  xlogcat <logfile> --ansi            终端回放，保留 ANSI 颜色/控制码(完全保真)
+  xlogcat <logfile> --input           只看 INPUT 行 (审计视图，一条一行)
+  xlogcat <logfile> --output          只看 OUTPUT 行 (审计视图，一条一行)
+  xlogcat <logfile> --input --output  同时看 INPUT 和 OUTPUT (审计视图)
+  xlogcat <logfile> --time            审计视图下显示时间戳
+  xlogcat <logfile> --raw             原样输出，不做任何解码
+
+模式说明:
+  - 默认(回放): 仅还原 OUTPUT 流，即原终端里真正看到的内容。会解码 \\xNN \\n \\r \\t
+    转义、剥离 ANSI 控制码、去掉多余的 \\r，并按真实换行输出；不带任何前缀。
+    INPUT 行(键盘输入)在回放中跳过——因为它与 OUTPUT 里的按键回显重复；如需查看
+    未回显的输入(例如密码)，请使用 --input。
+  - --ansi: 同回放，但保留 ANSI 颜色/光标码与 \\r，让阅读终端像原终端一样渲染
+    (注意: 清屏等控制码也会生效)。
+  - --input / --output / 两者同用: 审计视图，每条日志占一行，仅解码 \\xNN 并剥离
+    ANSI，\\n \\r \\t 保留为字面量以便 grep；INPUT 行会做退格(DEL/BS)还原。
+  - --raw: 原样打印日志每一行。
+"""
+import sys
+import re
+
+# 一行日志: [时间] TYPE: 内容
+LOG_RE = re.compile(r'^(\[.*?\]) (INPUT|OUTPUT): (.*)$')
+
+# 完整的 ANSI/控制码剥离: CSI / OSC / DCS / 单字符 Fe
+#   CSI  \x1b[?2004h  \x1b[01;34m  \x1b[2J   (参数可含 ? ; 数字)
+#   OSC  \x1b]0;title\x07                       (以 BEL 或 ST 结束)
+ANSI_RE = re.compile(
+    r'\x1b(?:'
+    r'\[[0-?]*[ -/]*[@-~]'             # CSI
+    r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC
+    r'|P[^\x1b]*\x1b\\'                # DCS
+    r'|[@-Z\\^_]'                      # 单字符 Fe
+    r')'
+)
+
+# xlogger 的 \xNN 转义
+HEX_RE = re.compile(r'\\x([0-9a-fA-F]{2})')
+
+
+def strip_ansi(text):
+    """去除 ANSI 转义序列(颜色码、光标移动、标题、清屏等)"""
+    return ANSI_RE.sub('', text)
+
+
+def apply_backspace(text):
+    """处理 DEL(\\x7f) 与 BS(\\b)，模拟真实输入结果"""
+    result = []
+    for ch in text:
+        if ch == '\x7f' or ch == '\x08':
+            if result:
+                result.pop()
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
+def decode_all(text):
+    """解码 xlogger 的全部转义: \\xNN \\n \\r \\t -> 真实字节(用于回放)"""
+    text = text.replace('\\n', '\n')
+    text = text.replace('\\r', '\r')
+    text = text.replace('\\t', '\t')
+    text = HEX_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+    return text
+
+
+def decode_hex_only(text):
+    """仅解码 \\xNN，保留 \\n \\r \\t 字面量(审计视图: 一条日志占一行)"""
+    return HEX_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def usage(prog):
+    print(f"用法: {prog} <logfile> [--ansi] [--input] [--output] [--time] [--raw]",
+          file=sys.stderr)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ('-h', '--help'):
+        usage(sys.argv[0])
+        sys.exit(0 if args else 1)
+
+    filepath = args[0]
+    flags = set(args[1:])
+
+    raw       = '--raw' in flags
+    keep_ansi = '--ansi' in flags
+    only_in   = '--input' in flags
+    only_out  = '--output' in flags
+    show_time = '--time' in flags
+    labeled   = only_in or only_out      # 审计视图
+
+    try:
+        out = sys.stdout
+        with open(filepath, 'r', errors='replace') as f:
+            for line in f:
+                line = line.rstrip('\n')
+
+                # ---- 原样输出 ----
+                if raw:
+                    print(line)
+                    continue
+
+                m = LOG_RE.match(line)
+
+                # ---- 审计视图 (labeled) ----
+                if labeled:
+                    if not m:
+                        # 会话头/尾、参数等元信息原样输出，提供上下文
+                        print(line)
+                        continue
+                    timestamp, ltype, content = m.groups()
+                    # 仅在单独指定某一类时过滤；两者同用时都显示
+                    if only_in and not only_out and ltype != 'INPUT':
+                        continue
+                    if only_out and not only_in and ltype != 'OUTPUT':
+                        continue
+                    content = decode_hex_only(content)
+                    if not keep_ansi:
+                        content = strip_ansi(content)
+                    prefix = f'{timestamp} ' if show_time else ''
+                    if ltype == 'INPUT':
+                        decoded = apply_backspace(content)
+                        if decoded != content:
+                            print(f'{prefix}{ltype}: {decoded}  (原始: {content})')
+                        else:
+                            print(f'{prefix}{ltype}: {decoded}')
+                    else:
+                        print(f'{prefix}{ltype}: {content}')
+                    continue
+
+                # ---- 回放视图 (默认) ----
+                if not m:
+                    # 跳过会话头/尾、参数、空行
+                    continue
+                _timestamp, ltype, content = m.groups()
+                if ltype != 'OUTPUT':
+                    # 回放只还原 OUTPUT 流；INPUT(键盘输入)跳过
+                    continue
+                content = decode_all(content)
+                if not keep_ansi:
+                    content = strip_ansi(content)
+                    # 去掉多余的 \r: 终端里 \r\n 与 \n 视觉一致，去掉后更干净、便于管道
+                    content = content.replace('\r', '')
+                out.write(content)
+    except FileNotFoundError:
+        print(f"错误: 文件不存在: {filepath}", file=sys.stderr)
+        sys.exit(1)
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
